@@ -1,0 +1,48 @@
+{
+  "name": "session-skills",
+  "version": "1.0.0",
+  "description": "Shows skills activated in the current OpenChamber session and its subagents inside Work Status.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bunx openchamber-guest-bundle status/main.ts status/main.js && bunx openchamber-guest-bundle --node service/main.ts service/main.js",
+    "check": "bunx openchamber-guest-check",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test"
+  },
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.7.0"
+    },
+    "id": "session-skills",
+    "name": "Session Skills",
+    "icon": "sparkling",
+    "contributes": {
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "provides": [
+          "opencode"
+        ]
+      },
+      "statusSection": {
+        "entry": "status/index.html",
+        "title": "Session Skills",
+        "height": 28
+      }
+    }
+  },
+  "dependencies": {
+    "@openchamber/sdk": "2.7.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.6",
+    "playwright": "^1.65.0"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}
