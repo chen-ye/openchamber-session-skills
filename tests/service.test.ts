@@ -627,14 +627,14 @@ describe('opencode.db skill heatmap endpoint & zero-activation discovery', () =>
             skillPath: 'skills/impeccable/SKILL.md',
           },
           'jira-cli': {
-            source: path.join(homeDir, 'Projects', 'reliaskills'),
+            source: path.join(homeDir, 'Projects', 'my-skills'),
             sourceType: 'local',
-            sourceUrl: path.join(homeDir, 'Projects', 'reliaskills'),
+            sourceUrl: path.join(homeDir, 'Projects', 'my-skills'),
           },
           'dormant-alpha': {
-            source: 'cye/poke',
+            source: 'example-org/skills',
             sourceType: 'git',
-            sourceUrl: 'https://git.r2air.com/cye/poke.git',
+            sourceUrl: 'https://git.example.com/example-org/skills.git',
             ref: 'main',
             skillPath: 'skills/dormant-alpha/SKILL.md',
           },
@@ -819,16 +819,16 @@ describe('opencode.db skill heatmap endpoint & zero-activation discovery', () =>
       });
       expect(byId.get('skill-development')?.total).toBe(1);
       expect(byId.get('jira-cli')?.total).toBe(1);
-      expect(byId.get('jira-cli')?.upstream?.source).toBe('~/Projects/reliaskills');
+      expect(byId.get('jira-cli')?.upstream?.source).toBe('~/Projects/my-skills');
       expect(byId.get('dormant-alpha')).toMatchObject({
         installed: true,
         total: 0,
         sessions: 0,
         description: 'Never invoked alpha skill.',
         upstream: {
-          source: 'git.r2air.com/cye/poke',
+          source: 'git.example.com/example-org/skills',
           sourceType: 'git',
-          sourceUrl: 'https://git.r2air.com/cye/poke.git',
+          sourceUrl: 'https://git.example.com/example-org/skills.git',
           ref: 'main',
           skillPath: 'skills/dormant-alpha/SKILL.md',
         },

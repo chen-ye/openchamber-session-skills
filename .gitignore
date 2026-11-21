@@ -32,3 +32,17 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# local agent & tool state
+.opencode/
+.omo/
+.claude/
+.cursor/
+
+# databases & key material
+*.sqlite*
+*.db
+*.duckdb
+*.pem
+*.key
+*.p12

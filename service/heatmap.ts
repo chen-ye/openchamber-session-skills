@@ -104,18 +104,6 @@ const BUILTIN_ALIASES: ReadonlyArray<readonly [string, string]> = [
   ['OpenCode', 'opencode'],
   ['report', 'report'],
   ['Report', 'report'],
-  ['policy-management', 'policy-management'],
-  ['Policy Management', 'policy-management'],
-  ['sift', 'sift'],
-  ['Sift', 'sift'],
-  ['slack-headless', 'slack-headless'],
-  ['Slack Headless Reader', 'slack-headless'],
-  ['gemini-extension-authoring', 'gemini-extension-authoring'],
-  ['Gemini Extension Authoring', 'gemini-extension-authoring'],
-  ['notion-apparel-inventory-management', 'notion-apparel-inventory-management'],
-  ['Notion Apparel Inventory Management', 'notion-apparel-inventory-management'],
-  ['skill-development', 'skill-development'],
-  ['Skill Development', 'skill-development'],
 ];
 
 const localDateParts = (ms: number): {
@@ -145,12 +133,6 @@ export const deriveProjectLabel = (dir: string, homeDir: string | null): string 
   if (norm.includes('/.local/share/opencode/worktree/')) return 'opencode-worktree';
   if (homeDir) {
     const cleanHome = homeDir.replace(/\\/g, '/').replace(/\/+$/, '');
-    const spacesPrefix = `${cleanHome}/Projects/spaces/`;
-    if (norm.startsWith(spacesPrefix)) {
-      const seg = norm.slice(spacesPrefix.length).split('/')[0] || 'spaces';
-      if (seg.startsWith('DISPLAYS-') || seg.startsWith('PR-DISPLAYS-')) return 'DISPLAYS';
-      return seg;
-    }
     if (norm === cleanHome) return '~';
   }
   return path.basename(norm) || norm;

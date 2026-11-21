@@ -15,7 +15,7 @@ import { GUEST_UI_LOOK_CSS } from '@openchamber/sdk/ui';
 import { startServer } from '../service/main.ts';
 
 const EXTENSION_ROOT = path.resolve(import.meta.dir, '..');
-const SCREENSHOT_DIR = '/tmp/opencode';
+const SCREENSHOT_DIR = path.join(os.tmpdir(), 'session-skills-playwright');
 
 const DARK_THEME: HostTheme = {
   mode: 'dark',
@@ -934,9 +934,9 @@ describe('Skill Usage Heatmap Page Browser Verification (Playwright)', () => {
         version: 3,
         skills: {
           'jira-cli': {
-            source: path.join(homeDir, 'Projects', 'reliaskills'),
+            source: path.join(homeDir, 'Projects', 'my-skills'),
             sourceType: 'local',
-            sourceUrl: path.join(homeDir, 'Projects', 'reliaskills'),
+            sourceUrl: path.join(homeDir, 'Projects', 'my-skills'),
           },
           impeccable: {
             source: 'pbakaus/impeccable',
@@ -1167,7 +1167,7 @@ window.__pushTheme = (t) => {
       );
       expect(allIds).toEqual(['jira-cli', 'impeccable', 'dormant-check', 'dormant-unused', 'wrangler']);
       expect(await frame.locator('.sh-skill-row[data-dormant="true"]').count()).toBe(3);
-      expect(await frame.locator('.sh-skill-row[data-skill-id="jira-cli"] .sh-upstream').textContent()).toBe('~/Projects/reliaskills');
+      expect(await frame.locator('.sh-skill-row[data-skill-id="jira-cli"] .sh-upstream').textContent()).toBe('~/Projects/my-skills');
       expect(await frame.locator('.sh-skill-row[data-skill-id="dormant-check"] .sh-upstream').textContent()).toBe('vercel-labs/skills');
       expect(await frame.locator('.sh-skill-row[data-skill-id="dormant-unused"] .sh-upstream').textContent()).toBe('—');
       expect(await frame.locator('.sh-skill-row[data-skill-id="impeccable"] .sh-policy-col .sh-policy-pill').textContent()).toBe('allow*');
