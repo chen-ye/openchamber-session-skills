@@ -18,6 +18,7 @@ import {
   type SessionSkillSummary,
   type SessionSkillsResponse,
   type SkillContextDepth,
+  type SkillHeatmapResponse,
   type SkillScope,
   type SkillStatus,
   type SkillTrigger,
@@ -26,9 +27,12 @@ import {
 const STATUS_MIN_HEIGHT = 24;
 const STATUS_MAX_HEIGHT = 320;
 const POPOVER_MIN_HEIGHT = 64;
-const POPOVER_MAX_HEIGHT = 460;
+const POPOVER_MAX_HEIGHT = 480;
 const POPOVER_WIDTH = 368;
 const POPOVER_INITIAL_HEIGHT = 260;
+const HEATMAP_POPOVER_ID = 'skill-heatmap';
+const HEATMAP_POPOVER_WIDTH = 560;
+const HEATMAP_POPOVER_HEIGHT = 420;
 const DEEP_CONTEXT_TOKENS_THRESHOLD = 100_000;
 
 export type VisualFreshnessTone = 'fresh' | 'deep' | 'compacted' | 'loading' | 'failed';
@@ -776,7 +780,185 @@ export const bootStatusApp = (): void => {
     }
   };
 
+  const mountHeatmapPopover = async (): Promise<void> => {
+    clearActiveHandles();
+    root.replaceChildren();
+
+    const wrap = document.createElement('div');
+    wrap.className = 'ss-hm-popover';
+
+    const header = document.createElement('div');
+    header.className = 'ss-pop-header';
+    const title = document.createElement('h2');
+    title.className = 'ss-pop-title';
+    title.textContent = 'Skill Usage Heatmap (8w)';
+    header.appendChild(title);
+
+    const badgeWrap = document.createElement('div');
+    header.appendChild(badgeWrap);
+    wrap.appendChild(header);
+
+    const loadingNote = document.createElement('p');
+    loadingNote.className = 'ss-hm-sub';
+    loadingNote.textContent = 'Loading opencode.db heatmap…';
+    wrap.appendChild(loadingNote);
+
+    root.appendChild(wrap);
+    syncFrameHeight(POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT);
+
+    try {
+      const res = await host.serviceRequest({
+        method: 'GET',
+        path: '/heatmap',
+        query: { window: '8w' },
+      });
+      if (res.status !== 200) {
+        loadingNote.textContent = 'Could not load skill heatmap.';
+        syncFrameHeight(POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT);
+        return;
+      }
+      const parsed = JSON.parse(res.body) as SkillHeatmapResponse;
+      if (!isRecord(parsed) || !Array.isArray(parsed.skills) || !Array.isArray(parsed.weeks)) {
+        loadingNote.textContent = 'Invalid heatmap data.';
+        syncFrameHeight(POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT);
+        return;
+      }
+
+      let showDormantOnly = false;
+
+      const renderHeatmapInner = (): void => {
+        clearActiveHandles();
+        wrap.replaceChildren();
+
+        const hdr = document.createElement('div');
+        hdr.className = 'ss-pop-header';
+        const ttl = document.createElement('h2');
+        ttl.className = 'ss-pop-title';
+        ttl.textContent = 'Skill Usage Heatmap (8w)';
+        hdr.appendChild(ttl);
+
+        const controls = document.createElement('div');
+        controls.className = 'ss-pop-actions';
+        const toggleWrap = document.createElement('span');
+        const toggleBtn = mountButton(toggleWrap, {
+          label: showDormantOnly
+            ? `All (${parsed.skills.length})`
+            : `0 uses (${parsed.stats.dormantInstalledCount})`,
+          variant: 'outline',
+          size: 'sm',
+          onClick: () => {
+            showDormantOnly = !showDormantOnly;
+            renderHeatmapInner();
+          },
+        });
+        activeDisposers.push(() => toggleBtn.dispose());
+        controls.appendChild(toggleWrap);
+
+        const bWrap = document.createElement('span');
+        const bHandle = mountBadge(bWrap, {
+          label: `${parsed.stats.cleanEvents} uses`,
+          tone: 'success',
+        });
+        activeDisposers.push(() => bHandle.dispose());
+        controls.appendChild(bWrap);
+
+        hdr.appendChild(controls);
+        wrap.appendChild(hdr);
+
+        const sub = document.createElement('p');
+        sub.className = 'ss-hm-sub';
+        sub.textContent = `${parsed.stats.distinctSkillsUsed} / ${parsed.stats.installedSkillsCount} installed active · ${parsed.stats.dormantInstalledCount} dormant · Open Extension pages → Skill Usage Heatmap for full view`;
+        wrap.appendChild(sub);
+
+        const rows = (showDormantOnly
+          ? parsed.skills.filter((s) => s.total === 0)
+          : parsed.skills.slice(0, 20));
+
+        let maxVal = 1;
+        for (const r of rows) {
+          for (const v of r.weekCounts) {
+            if (v > maxVal) maxVal = v;
+          }
+        }
+
+        const tWrap = document.createElement('div');
+        tWrap.className = 'ss-hm-table-wrap';
+        const table = document.createElement('table');
+        table.className = 'ss-hm-table';
+        const thead = document.createElement('thead');
+        const htr = document.createElement('tr');
+        const thS = document.createElement('th');
+        thS.className = 'left';
+        thS.textContent = 'Skill';
+        htr.appendChild(thS);
+        const thT = document.createElement('th');
+        thT.textContent = 'Uses';
+        htr.appendChild(thT);
+        for (const w of parsed.weeks) {
+          const th = document.createElement('th');
+          th.textContent = w.slice(5);
+          htr.appendChild(th);
+        }
+        thead.appendChild(htr);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        for (const r of rows) {
+          const tr = document.createElement('tr');
+          const tdS = document.createElement('td');
+          tdS.className = 'left';
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ss-hm-skill-btn';
+          btn.textContent = r.id;
+          btn.title = `Click to insert $${r.id} in chat`;
+          btn.addEventListener('click', () => {
+            void host.compose({ text: `$${r.id} `, mode: 'append' })
+              .then(() => host.toast({ kind: 'success', message: `Inserted $${r.id}` }))
+              .catch(() => {});
+          });
+          tdS.appendChild(btn);
+          tr.appendChild(tdS);
+
+          const tdT = document.createElement('td');
+          tdT.textContent = String(r.total);
+          tr.appendChild(tdT);
+
+          for (let i = 0; i < parsed.weeks.length; i += 1) {
+            const v = r.weekCounts[i] ?? 0;
+            const td = document.createElement('td');
+            const cell = document.createElement('span');
+            const lvl = v <= 0 ? 0 : Math.min(4, Math.max(1, Math.ceil(Math.sqrt(v / maxVal) * 4)));
+            cell.className = `ss-hm-cell l${lvl}`;
+            cell.textContent = v > 0 ? String(v) : '';
+            td.appendChild(cell);
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        tWrap.appendChild(table);
+        wrap.appendChild(tWrap);
+
+        syncFrameHeight(POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT);
+      };
+
+      renderHeatmapInner();
+    } catch {
+      loadingNote.textContent = 'Could not load skill heatmap.';
+      syncFrameHeight(POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT);
+    }
+  };
+
   const mountPopoverSurface = (ctx: HostReadyContext): void => {
+    if (
+      ctx.popover?.id === HEATMAP_POPOVER_ID
+      || (isRecord(ctx.popover?.data) && ctx.popover.data.kind === 'heatmap')
+    ) {
+      void mountHeatmapPopover();
+      return;
+    }
+
     clearActiveHandles();
     root.replaceChildren();
 
@@ -824,6 +1006,24 @@ export const bootStatusApp = (): void => {
     if (mountedSurface !== 'status') {
       mountedSurface = 'status';
       setupResizeObserver(STATUS_MIN_HEIGHT, STATUS_MAX_HEIGHT);
+
+      if (ctx.features?.statusControls) {
+        void host.setStatusControls([{ kind: 'button', id: 'heatmap', label: 'Map' }]).catch(() => {});
+        host.onStatusControl(({ id }) => {
+          if (id !== 'heatmap') return;
+          void host.openSurface('plugin:session-skills').catch(() => {
+            if (!latestContext?.features?.popovers) return;
+            void host.openPopover({
+              id: HEATMAP_POPOVER_ID,
+              anchor: { x: 0, y: 0, width: 1, height: 1 },
+              width: HEATMAP_POPOVER_WIDTH,
+              height: HEATMAP_POPOVER_HEIGHT,
+              side: 'left',
+              data: { kind: 'heatmap' },
+            }).catch(() => {});
+          });
+        });
+      }
 
       host.onSession((session) => {
         const nextId = session?.id ?? null;

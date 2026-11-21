@@ -4,7 +4,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../service/main.ts';
+import { evaluateSkillPolicy } from '../service/heatmap.ts';
 import {
   aggregateScopedSkills,
   mapTimestampToParentTurn,
@@ -16,7 +18,11 @@ import {
   formatDepthSummary,
   formatTurnAgeLabel,
 } from '../status/main.ts';
-import { SKILLS_UPDATED_TOPIC, type SessionSkillsResponse } from '../shared/types.ts';
+import {
+  SKILLS_UPDATED_TOPIC,
+  type SessionSkillsResponse,
+  type SkillHeatmapResponse,
+} from '../shared/types.ts';
 
 const listenEphemeral = (server: http.Server): Promise<number> => (
   new Promise((resolve, reject) => {
@@ -579,5 +585,338 @@ Body instructions here.
       await new Promise<void>((r) => mockCallback.close(() => r()));
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('opencode.db skill heatmap endpoint & zero-activation discovery', () => {
+  test('mines opencode.db with provenance filters, includes zero-activation skills, and updates incrementally', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'session-skills-hm-'));
+    const homeDir = path.join(tmpDir, 'home');
+    const skillsRoot = path.join(homeDir, '.config', 'opencode', 'skills');
+    const dataDir = path.join(tmpDir, 'service-data');
+    const dbPath = path.join(tmpDir, 'opencode.db');
+
+    const writeSkill = async (dirId: string, fmName: string, desc: string) => {
+      const dir = path.join(skillsRoot, dirId);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, 'SKILL.md'),
+        `---\nname: ${fmName}\ndescription: ${desc}\n---\n# ${fmName}\n`,
+        'utf8',
+      );
+    };
+
+    await writeSkill('policy-management', 'Policy Management', 'Manage shell permissions.');
+    await writeSkill('impeccable', 'impeccable', 'Visual polish.');
+    await writeSkill('jira-cli', 'jira-cli', 'Query Jira tickets.');
+    await writeSkill('skill-development', 'Skill Development', 'Author new skills.');
+    await writeSkill('dormant-alpha', 'dormant-alpha', 'Never invoked alpha skill.');
+    await writeSkill('dormant-beta', 'dormant-beta', 'Never invoked beta skill.');
+
+    const lockDir = path.join(homeDir, '.agents');
+    await fs.mkdir(lockDir, { recursive: true });
+    await fs.writeFile(
+      path.join(lockDir, '.skill-lock.json'),
+      JSON.stringify({
+        version: 3,
+        skills: {
+          impeccable: {
+            source: 'pbakaus/impeccable',
+            sourceType: 'github',
+            sourceUrl: 'https://github.com/pbakaus/impeccable.git',
+            skillPath: 'skills/impeccable/SKILL.md',
+          },
+          'jira-cli': {
+            source: path.join(homeDir, 'Projects', 'reliaskills'),
+            sourceType: 'local',
+            sourceUrl: path.join(homeDir, 'Projects', 'reliaskills'),
+          },
+          'dormant-alpha': {
+            source: 'cye/poke',
+            sourceType: 'git',
+            sourceUrl: 'https://git.r2air.com/cye/poke.git',
+            ref: 'main',
+            skillPath: 'skills/dormant-alpha/SKILL.md',
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const opencodeCfgDir = path.join(homeDir, '.config', 'opencode');
+    await fs.mkdir(opencodeCfgDir, { recursive: true });
+    await fs.writeFile(
+      path.join(opencodeCfgDir, 'opencode.jsonc'),
+      `{
+        // JSONC comments and trailing commas supported
+        "policies": [
+          { "action": "skill.use", "resource": "impeccable", "effect": "allow" },
+          { "action": "skill.use", "resource": "dormant-beta", "effect": "deny" },
+          { "action": "skill.use", "resource": "wrangler", "effect": "deny" },
+        ],
+      }`,
+      'utf8',
+    );
+
+    const now = Date.now();
+    const t0 = now - 3 * 24 * 3600 * 1000;
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE session_v2 (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT,
+        directory TEXT NOT NULL,
+        agent TEXT,
+        title TEXT,
+        time_created INTEGER NOT NULL
+      );
+      CREATE TABLE session_message (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        time_created INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE INDEX session_message_time_created_idx ON session_message(time_created);
+    `);
+
+    const insSess = db.prepare(
+      'INSERT INTO session_v2 (id, parent_id, directory, agent, title, time_created) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    const insMsg = db.prepare(
+      'INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+
+    // Organic root session + child subagent + fork + auto-gate noise
+    insSess.run('ses_org_1', null, '/home/alice/Projects/app-one', 'orchestrator', 'Feature work', t0);
+    insSess.run('ses_sub_1', 'ses_org_1', '/home/alice/Projects/app-one', 'explore', 'Explore', t0 + 500);
+    insSess.run('ses_fork_1', null, '/home/alice/Projects/app-one', 'orchestrator', 'Forked', t0 + 10_000);
+    insSess.run('ses_ag_1', null, '/tmp/opencode-auto-gate/sandbox', 'auto-gate-eval', 'Eval', t0);
+
+    // 1. User $impeccable attach
+    insMsg.run('msg_u1', 'ses_org_1', 'user', 1, t0 + 100, JSON.stringify({
+      time: { created: t0 + 100 },
+      text: '$impeccable polish this',
+      skills: [{ id: 'impeccable', name: 'impeccable', text: '<skill_content name="impeccable">hi</skill_content>' }],
+    }));
+
+    // 2. Assistant tool=skill with alias metadata.name "Policy Management" -> normalized to policy-management
+    insMsg.run('msg_a1', 'ses_org_1', 'assistant', 2, t0 + 200, JSON.stringify({
+      agent: 'orchestrator',
+      content: [{
+        type: 'tool',
+        id: 'call_1',
+        name: 'skill',
+        state: {
+          status: 'completed',
+          input: {},
+          metadata: { name: 'Policy Management' },
+        },
+        time: { created: t0 + 200, completed: t0 + 210 },
+      }],
+    }));
+
+    // 3. Slash prompt `/Skill Development`
+    insMsg.run('msg_u2', 'ses_org_1', 'user', 3, t0 + 300, JSON.stringify({
+      time: { created: t0 + 300 },
+      text: '/Skill Development build a new skill',
+    }));
+
+    // 4. Parent subagent handoff + child [SKILL: jira-cli] -> should deduplicate to 1
+    insMsg.run('msg_a2', 'ses_org_1', 'assistant', 4, t0 + 400, JSON.stringify({
+      agent: 'orchestrator',
+      content: [{
+        type: 'tool',
+        id: 'call_sub_1',
+        name: 'subagent',
+        state: {
+          status: 'completed',
+          input: { agent: 'explore', skills: ['jira-cli'] },
+          metadata: { sessionID: 'ses_sub_1' },
+        },
+        time: { created: t0 + 400, completed: t0 + 450 },
+      }],
+    }));
+    insMsg.run('msg_sub_u1', 'ses_sub_1', 'user', 1, t0 + 510, JSON.stringify({
+      time: { created: t0 + 510 },
+      text: '[SKILL: jira-cli]\n# Jira\n\n1. TASK\nCheck ticket.',
+    }));
+
+    // 5. Cloned fork history (26-char ULID compound ID + pre-session timestamp) -> skipped
+    insMsg.run('msg_1186723d0001SB2Gvsf8bF7ZDR_1', 'ses_fork_1', 'user', 1, t0 + 100, JSON.stringify({
+      time: { created: t0 + 100 },
+      text: '$impeccable polish this',
+      skills: [{ id: 'impeccable', name: 'impeccable', text: '<skill_content name="impeccable">hi</skill_content>' }],
+    }));
+
+    // 6. AutoGate eval noise -> skipped
+    insMsg.run('msg_ag_1', 'ses_ag_1', 'assistant', 1, t0 + 200, JSON.stringify({
+      agent: 'auto-gate-eval',
+      content: [{
+        type: 'tool',
+        id: 'call_ag',
+        name: 'skill',
+        state: { status: 'completed', input: { id: 'dormant-alpha' } },
+      }],
+    }));
+
+    const probe = http.createServer();
+    const servicePort = await listenEphemeral(probe);
+    await new Promise<void>((r) => probe.close(() => r()));
+
+    const token = 'hm-token';
+    const running = startServer({
+      port: servicePort,
+      token,
+      homeDir,
+      dbPath,
+      dataDir,
+      env: {
+        OPENCHAMBER_SERVICE_PORT: String(servicePort),
+        OPENCHAMBER_SERVICE_TOKEN: token,
+      },
+    })!;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${servicePort}/heatmap?window=8w`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as SkillHeatmapResponse;
+      expect(body.dbAvailable).toBe(true);
+      expect(body.stats.cleanEvents).toBe(4);
+      expect(body.stats.excludedEvalSessions).toBe(1);
+      expect(body.stats.forkClonedMessagesSkipped).toBe(1);
+      expect(body.stats.dedupedHandoffs).toBe(1);
+      expect(body.stats.distinctSkillsUsed).toBe(4);
+      expect(body.stats.installedSkillsCount).toBe(6);
+      expect(body.stats.dormantInstalledCount).toBe(2);
+      expect(body.stats.deniedCount).toBe(2);
+
+      const byId = new Map(body.skills.map((s) => [s.id, s]));
+      expect(byId.get('policy-management')?.total).toBe(1);
+      expect(byId.get('policy-management')?.upstream).toBeNull();
+      expect(byId.get('policy-management')?.policy).toEqual({
+        effect: 'allow',
+        explicit: false,
+        pattern: null,
+        sourcePath: null,
+      });
+      expect(byId.get('impeccable')?.total).toBe(1);
+      expect(byId.get('impeccable')?.policy).toMatchObject({
+        effect: 'allow',
+        explicit: true,
+        pattern: 'impeccable',
+        sourcePath: '~/.config/opencode/opencode.jsonc',
+      });
+      expect(byId.get('impeccable')?.upstream).toEqual({
+        source: 'pbakaus/impeccable',
+        sourceType: 'github',
+        sourceUrl: 'https://github.com/pbakaus/impeccable.git',
+        ref: null,
+        skillPath: 'skills/impeccable/SKILL.md',
+      });
+      expect(byId.get('skill-development')?.total).toBe(1);
+      expect(byId.get('jira-cli')?.total).toBe(1);
+      expect(byId.get('jira-cli')?.upstream?.source).toBe('~/Projects/reliaskills');
+      expect(byId.get('dormant-alpha')).toMatchObject({
+        installed: true,
+        total: 0,
+        sessions: 0,
+        description: 'Never invoked alpha skill.',
+        upstream: {
+          source: 'git.r2air.com/cye/poke',
+          sourceType: 'git',
+          sourceUrl: 'https://git.r2air.com/cye/poke.git',
+          ref: 'main',
+          skillPath: 'skills/dormant-alpha/SKILL.md',
+        },
+      });
+      expect(byId.get('dormant-beta')).toMatchObject({
+        installed: true,
+        total: 0,
+        sessions: 0,
+        upstream: null,
+        policy: {
+          effect: 'deny',
+          explicit: true,
+          pattern: 'dormant-beta',
+          sourcePath: '~/.config/opencode/opencode.jsonc',
+        },
+      });
+      expect(byId.get('wrangler')).toMatchObject({
+        installed: false,
+        total: 0,
+        sessions: 0,
+        policy: {
+          effect: 'deny',
+          explicit: true,
+          pattern: 'wrangler',
+          sourcePath: '~/.config/opencode/opencode.jsonc',
+        },
+      });
+
+      // Insert a new activation after watermark and verify incremental refresh picks it up
+      const tNew = now - 1000;
+      insMsg.run('msg_new_1', 'ses_org_1', 'assistant', 5, tNew, JSON.stringify({
+        agent: 'orchestrator',
+        content: [{
+          type: 'tool',
+          id: 'call_new',
+          name: 'skill',
+          state: { status: 'completed', input: { id: 'impeccable' } },
+          time: { created: tNew, completed: tNew + 10 },
+        }],
+      }));
+
+      const res2 = await fetch(`http://127.0.0.1:${servicePort}/heatmap?window=8w&refresh=1`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body2 = (await res2.json()) as SkillHeatmapResponse;
+      expect(body2.stats.cleanEvents).toBe(5);
+      expect(body2.skills.find((s) => s.id === 'impeccable')?.total).toBe(2);
+      expect(body2.skills.find((s) => s.id === 'dormant-alpha')?.total).toBe(0);
+
+      // Verify missing DB still returns installed skills with 0 uses
+      await running.close();
+      const probe2 = http.createServer();
+      const port2 = await listenEphemeral(probe2);
+      await new Promise<void>((r) => probe2.close(() => r()));
+      const missingSrv = startServer({
+        port: port2,
+        token,
+        homeDir,
+        dbPath: path.join(tmpDir, 'missing.db'),
+        dataDir: path.join(tmpDir, 'empty-cache'),
+        env: { OPENCHAMBER_SERVICE_PORT: String(port2), OPENCHAMBER_SERVICE_TOKEN: token },
+      })!;
+      try {
+        const res3 = await fetch(`http://127.0.0.1:${port2}/heatmap`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const body3 = (await res3.json()) as SkillHeatmapResponse;
+        expect(body3.dbAvailable).toBe(false);
+        expect(body3.skills.length).toBe(7); // 6 installed + 1 exact policy entry (wrangler)
+        expect(body3.skills.every((s) => s.total === 0)).toBe(true);
+      } finally {
+        await missingSrv.close();
+      }
+    } finally {
+      db.close();
+      await running.close().catch(() => {});
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('evaluates skill.use wildcard & last-matching-rule-wins policy precedence', () => {
+    const rules = [
+      { pattern: 'paseo*', effect: 'deny' as const, sourcePath: '~/.config/opencode/opencode.jsonc' },
+      { pattern: 'paseo-help', effect: 'allow' as const, sourcePath: '~/.config/opencode/opencode.jsonc' },
+    ];
+    expect(evaluateSkillPolicy(rules, 'paseo')).toMatchObject({ effect: 'deny', explicit: true, pattern: 'paseo*' });
+    expect(evaluateSkillPolicy(rules, 'paseo-plugin')).toMatchObject({ effect: 'deny', explicit: true, pattern: 'paseo*' });
+    expect(evaluateSkillPolicy(rules, 'paseo-help')).toMatchObject({ effect: 'allow', explicit: true, pattern: 'paseo-help' });
+    expect(evaluateSkillPolicy(rules, 'jira-cli')).toEqual({ effect: 'allow', explicit: false, pattern: null, sourcePath: null });
   });
 });

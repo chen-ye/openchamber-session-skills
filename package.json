@@ -6,7 +6,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bunx openchamber-guest-bundle status/main.ts status/main.js && bunx openchamber-guest-bundle --node service/main.ts service/main.js",
+    "build": "bunx openchamber-guest-bundle status/main.ts status/main.js && bunx openchamber-guest-bundle page/main.ts page/main.js && bunx openchamber-guest-bundle --node service/main.ts service/main.js",
     "check": "bunx openchamber-guest-check",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
@@ -27,10 +27,17 @@
           "opencode"
         ]
       },
+      "panel": {
+        "entry": "page/index.html"
+      },
       "statusSection": {
         "entry": "status/index.html",
         "title": "Session Skills",
         "height": 28
+      },
+      "page": {
+        "entry": "page/index.html",
+        "title": "Skill Usage Heatmap"
       }
     }
   },

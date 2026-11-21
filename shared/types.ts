@@ -49,3 +49,79 @@ export type SkillsUpdatedNotice = {
 };
 
 export const SKILLS_UPDATED_TOPIC = 'skills-updated';
+export const HEATMAP_UPDATED_TOPIC = 'heatmap-updated';
+
+export type SkillHeatmapScopeFilter = 'all' | 'direct' | 'subagent';
+export type SkillHeatmapWindow = '8w' | '16w' | 'all';
+
+export type SkillHeatmapDay = {
+  day: string;
+  count: number;
+  sessions: number;
+  topSkills: string[];
+};
+
+export type SkillUpstreamInfo = {
+  source: string;
+  sourceType: string;
+  sourceUrl: string | null;
+  ref: string | null;
+  skillPath: string | null;
+};
+
+export type SkillPolicyEffect = 'allow' | 'deny';
+
+export type SkillPolicyState = {
+  effect: SkillPolicyEffect;
+  explicit: boolean;
+  pattern: string | null;
+  sourcePath: string | null;
+};
+
+export type SkillHeatmapRow = {
+  id: string;
+  name: string;
+  installed: boolean;
+  total: number;
+  sessions: number;
+  user: number;
+  agent: number;
+  subagent: number;
+  failed: number;
+  firstDay: string | null;
+  lastDay: string | null;
+  weekCounts: number[];
+  weekSessions: number[];
+  byProject: Record<string, number>;
+  description: string | null;
+  displayPath: string | null;
+  upstream: SkillUpstreamInfo | null;
+  policy: SkillPolicyState;
+};
+
+export type SkillHeatmapResponse = {
+  generatedAt: string;
+  dbAvailable: boolean;
+  dbPath: string | null;
+  cacheHit: boolean;
+  scanMs: number;
+  dateRange: [string, string] | null;
+  weeks: string[];
+  projects: string[];
+  currentProject: string | null;
+  stats: {
+    cleanEvents: number;
+    rootSessions: number;
+    distinctSkillsUsed: number;
+    installedSkillsCount: number;
+    dormantInstalledCount: number;
+    deniedCount: number;
+    activeDays: number;
+    excludedEvalSessions: number;
+    forkClonedMessagesSkipped: number;
+    dedupedHandoffs: number;
+  };
+  daily: SkillHeatmapDay[];
+  dowHour: number[][];
+  skills: SkillHeatmapRow[];
+};

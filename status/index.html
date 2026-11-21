@@ -378,6 +378,76 @@
         gap: 0.375rem;
         padding-top: 0.125rem;
       }
+
+      /* Compact Heatmap Popover */
+      .ss-hm-popover {
+        padding: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        background: var(--oc-elevated, transparent);
+      }
+      .ss-hm-sub {
+        font-size: 0.71875rem;
+        color: var(--oc-muted, rgba(128, 128, 128, 0.88));
+        margin: 0;
+      }
+      .ss-hm-table-wrap {
+        max-height: 17.5rem;
+        overflow: auto;
+      }
+      .ss-hm-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+      }
+      .ss-hm-table th,
+      .ss-hm-table td {
+        padding: 0.2rem 0.2rem;
+        font-size: 0.6875rem;
+        text-align: center;
+        border-bottom: 1px solid color-mix(in srgb, var(--oc-border, rgba(128, 128, 128, 0.16)) 60%, transparent);
+      }
+      .ss-hm-table th {
+        color: var(--oc-muted, rgba(128, 128, 128, 0.85));
+        font-weight: 500;
+      }
+      .ss-hm-table th.left,
+      .ss-hm-table td.left {
+        text-align: left;
+      }
+      .ss-hm-skill-btn {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: var(--oc-fg, inherit);
+        font-family: var(--oc-mono, ui-monospace, monospace);
+        font-size: 0.6875rem;
+        padding: 0.1rem 0;
+        cursor: pointer;
+        max-width: 10.5rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        text-align: left;
+      }
+      .ss-hm-skill-btn:hover {
+        text-decoration: underline;
+      }
+      .ss-hm-cell {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.25rem;
+        height: 1rem;
+        border-radius: 3px;
+        font-size: 0.625rem;
+      }
+      .ss-hm-cell.l0 { background: var(--oc-muted-surface, rgba(128, 128, 128, 0.1)); color: transparent; }
+      .ss-hm-cell.l1 { background: color-mix(in srgb, var(--oc-success, #2fb375) 26%, var(--oc-muted-surface, transparent)); }
+      .ss-hm-cell.l2 { background: color-mix(in srgb, var(--oc-success, #2fb375) 50%, var(--oc-muted-surface, transparent)); }
+      .ss-hm-cell.l3 { background: color-mix(in srgb, var(--oc-success, #2fb375) 75%, var(--oc-muted-surface, transparent)); color: #fff; font-weight: 600; }
+      .ss-hm-cell.l4 { background: var(--oc-success, #2fb375); color: #fff; font-weight: 600; }
     </style>
   </head>
   <body>

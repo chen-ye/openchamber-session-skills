@@ -3,6 +3,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createServiceHost, type ServiceHost } from '@openchamber/sdk';
+import { createHeatmapStore } from './heatmap.ts';
 import {
   aggregateScopedSkills,
   extractSkillTagNameFromToolContent,
@@ -16,8 +17,11 @@ import {
   type RawSkillEventRecord,
 } from './parser.ts';
 import {
+  HEATMAP_UPDATED_TOPIC,
   SKILLS_UPDATED_TOPIC,
   type SessionSkillsResponse,
+  type SkillHeatmapScopeFilter,
+  type SkillHeatmapWindow,
 } from '../shared/types.ts';
 
 const SESSION_ID_PATTERN = /^ses_[\w-]+$/;
@@ -679,6 +683,7 @@ export type EventSideEffects = {
   onEmitRootSession: (rootSessionId: string) => void;
   onHydrateSession: (sessionId: string, rootSessionId: string) => void;
   onEnrichDirectory?: (directory: string, rootSessionId: string) => void;
+  onHeatmapDirty?: () => void;
 };
 
 export const applyOpenCodeWireEvent = (
@@ -797,6 +802,9 @@ export const applyOpenCodeWireEvent = (
       const inboxId = trimmed(data.inboxID);
       const hadEnqueued = inboxId ? node.enqueuedInboxSkills.has(inboxId) : false;
       const rootId = resolveRootSessionId(store, sessionId);
+      if (hadEnqueued) {
+        effects.onHeatmapDirty?.();
+      }
       if (hadEnqueued || node.parentId || treeHasAnySkills(store, rootId)) {
         markSessionDirty(node);
         effects.onHydrateSession(sessionId, rootId);
@@ -814,6 +822,7 @@ export const applyOpenCodeWireEvent = (
 
     case 'session.skill.activated': {
       markSessionDirty(node);
+      effects.onHeatmapDirty?.();
       effects.onHydrateSession(sessionId, resolveRootSessionId(store, sessionId));
       break;
     }
@@ -962,6 +971,7 @@ export const applyOpenCodeWireEvent = (
           effects.onEnrichDirectory?.(directory, rootId);
         }
         markSessionDirty(node);
+        effects.onHeatmapDirty?.();
         effects.onEmitRootSession(rootId);
         effects.onHydrateSession(sessionId, rootId);
         break;
@@ -993,6 +1003,7 @@ export const applyOpenCodeWireEvent = (
         tracked.status = 'failed';
         tracked.error = rawErr.slice(0, 400);
         markSessionDirty(node);
+        effects.onHeatmapDirty?.();
         effects.onEmitRootSession(rootId);
         effects.onHydrateSession(sessionId, rootId);
       } else {
@@ -1111,6 +1122,20 @@ export type StartServerOptions = {
   opencodeUrl?: string;
   env?: Record<string, string | undefined>;
   homeDir?: string | null;
+  dbPath?: string | null;
+  dataDir?: string | null;
+  extraSkillRoots?: readonly string[];
+  extraConfigPaths?: readonly string[];
+};
+
+const parseHeatmapWindow = (raw: string | null): SkillHeatmapWindow => {
+  if (raw === '8w' || raw === '16w' || raw === 'all') return raw;
+  return '16w';
+};
+
+const parseHeatmapScope = (raw: string | null): SkillHeatmapScopeFilter => {
+  if (raw === 'all' || raw === 'direct' || raw === 'subagent') return raw;
+  return 'all';
 };
 
 export const startServer = (options?: StartServerOptions): {
@@ -1125,7 +1150,20 @@ export const startServer = (options?: StartServerOptions): {
 
   const opencodeUrl = (options?.opencodeUrl ?? env.OPENCHAMBER_OPENCODE_URL ?? '').replace(/\/+$/, '');
   const host: ServiceHost = createServiceHost({ env });
-  const store = createSkillServiceStore(options?.homeDir ?? (os.homedir() || null));
+  const homeDir = options?.homeDir === undefined ? (os.homedir() || null) : options.homeDir;
+  const store = createSkillServiceStore(homeDir);
+  const heatmapStore = createHeatmapStore({
+    homeDir,
+    dbPath: options?.dbPath,
+    dataDir: options?.dataDir !== undefined
+      ? options.dataDir
+      : (env.OPENCHAMBER_SERVICE_DATA_DIR?.trim() || null),
+    extraSkillRoots: options?.extraSkillRoots,
+    extraConfigPaths: options?.extraConfigPaths,
+    opencodeUrl: opencodeUrl || undefined,
+    serviceToken: token,
+  });
+  let heatmapEmitTimer: ReturnType<typeof setTimeout> | null = null;
 
   const scheduleEmit = (rootSessionId: string): void => {
     if (!rootSessionId || store.emitTimers.has(rootSessionId)) return;
@@ -1134,6 +1172,15 @@ export const startServer = (options?: StartServerOptions): {
       void host.emit(SKILLS_UPDATED_TOPIC, { sessionId: rootSessionId }).catch(() => {});
     }, EMIT_DEBOUNCE_MS);
     store.emitTimers.set(rootSessionId, timer);
+  };
+
+  const scheduleHeatmapEmit = (): void => {
+    heatmapStore.invalidate();
+    if (heatmapEmitTimer) return;
+    heatmapEmitTimer = setTimeout(() => {
+      heatmapEmitTimer = null;
+      void host.emit(HEATMAP_UPDATED_TOPIC, { at: Date.now() }).catch(() => {});
+    }, EMIT_DEBOUNCE_MS * 4);
   };
 
   const effects: EventSideEffects = {
@@ -1151,6 +1198,7 @@ export const startServer = (options?: StartServerOptions): {
         .then(() => scheduleEmit(rootSessionId))
         .catch(() => {});
     },
+    onHeatmapDirty: scheduleHeatmapEmit,
   };
 
   const streamHandle = opencodeUrl ? connectEventStream(store, opencodeUrl, token, effects) : null;
@@ -1165,6 +1213,29 @@ export const startServer = (options?: StartServerOptions): {
 
     if (req.method === 'GET' && reqUrl.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+      return;
+    }
+
+    if (req.method === 'GET' && reqUrl.pathname === '/heatmap') {
+      const windowParam = parseHeatmapWindow(reqUrl.searchParams.get('window'));
+      const scopeParam = parseHeatmapScope(reqUrl.searchParams.get('scope'));
+      const projectParam = reqUrl.searchParams.get('project')?.trim() || null;
+      const directoryParam = reqUrl.searchParams.get('directory')?.trim() || null;
+      const refreshParam = reqUrl.searchParams.get('refresh') === '1' || reqUrl.searchParams.get('refresh') === 'true';
+
+      heatmapStore.query({
+        window: windowParam,
+        scope: scopeParam,
+        project: projectParam,
+        directory: directoryParam,
+        refresh: refreshParam,
+      }).then((payload) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(payload));
+      }).catch(() => {
+        res.writeHead(500, { 'Content-Type': 'application/json' }).end(
+          JSON.stringify({ error: 'Failed to build skill usage heatmap.' }),
+        );
+      });
       return;
     }
 
@@ -1220,6 +1291,10 @@ export const startServer = (options?: StartServerOptions): {
     store,
     close: () => new Promise<void>((resolve) => {
       streamHandle?.stop();
+      if (heatmapEmitTimer) {
+        clearTimeout(heatmapEmitTimer);
+        heatmapEmitTimer = null;
+      }
       for (const timer of store.emitTimers.values()) {
         clearTimeout(timer);
       }

@@ -42,6 +42,14 @@ Hovering, focusing, or clicking a row opens a detail popover (or expands an inli
   - **Copy $skill**: copies `$<skill-id>` to the clipboard.
   - **Copy path**: copies the full `SKILL.md` path to the clipboard (when the skill directory is known).
 
+### Skill Usage Heatmap (`contributes.page` & `Map` control)
+
+Open **Extension pages → Skill Usage Heatmap** (or click **Map** in the Work Status header) to inspect historical and live skill usage mined read-only from `~/.local/share/opencode/opencode.db` (`node:sqlite`), backed by an incremental watermark cache in `OPENCHAMBER_SERVICE_DATA_DIR`:
+
+- Filters out `auto-gate-eval` / `/tmp/` sandboxes, cloned fork message history, and duplicate parent/child subagent handoffs.
+- **Includes installed skills with zero activations** alongside active skills, with lockfile upstream metadata from `~/.agents/.skill-lock.json` (`~/.config/opencode/.skill-lock.json` / `~/.gemini/.skill-lock.json`), OpenCode `skill.use` policy state (`allow` / `deny` from `/api/config` or `opencode.jsonc`), quick filters for dormant (`0 uses`) and denied skills, upstream & policy filtering, search, time window (`8w`, `16w`, `All`), scope (`All`, `User + Agent`, `Subagents`), project, metric (`Activations` vs `Sessions`), and click-to-insert / open-upstream actions.
+- Provides **Timeline** (`Daily Calendar` + `Skill × Week`), **Projects** (`Skill × Project`), and **Cadence** (`Weekday × Hour`) views.
+
 ## Development
 
 ```bash

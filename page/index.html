@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="text-scale" content="scale" />
+    <title>Skill Usage Heatmap</title>
+    <style>
+      :root {
+        --target-size: 28px;
+      }
+      @media (pointer: coarse) {
+        :root {
+          --target-size: 44px;
+        }
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--oc-bg, transparent);
+        color: var(--oc-fg, inherit);
+        font-family: var(--oc-font, system-ui, -apple-system, sans-serif);
+        line-height: 1.45;
+      }
+      #root {
+        container: heatmap / inline-size;
+        display: flex;
+        flex-direction: column;
+        gap: 0.875rem;
+        padding: clamp(0.75rem, 2vw, 1.25rem);
+        max-width: 1320px;
+        margin: 0 auto;
+        block-size: 100dvh;
+        overflow-y: auto;
+      }
+      #root > * {
+        flex-shrink: 0;
+      }
+      .sh-body {
+        flex: 1 1 0;
+        min-block-size: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.875rem;
+      }
+      .sh-body > * {
+        flex-shrink: 0;
+      }
+
+      .sh-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--oc-border, rgba(128, 128, 128, 0.22));
+      }
+      .sh-title-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        min-width: 0;
+      }
+      .sh-title-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .sh-title {
+        margin: 0;
+        font-size: clamp(1.05rem, 0.95rem + 0.4vw, 1.25rem);
+        font-weight: 600;
+        line-height: 1.25;
+      }
+      .sh-subtitle {
+        margin: 0;
+        font-size: 0.78125rem;
+        color: var(--oc-muted, rgba(128, 128, 128, 0.88));
+      }
+      .sh-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
+      /* KPI strip */
+      .sh-kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+        gap: 0.625rem;
+      }
+      .sh-kpi {
+        appearance: none;
+        text-align: left;
+        font: inherit;
+        color: inherit;
+        background: var(--oc-elevated, rgba(128, 128, 128, 0.06));
+        border: 1px solid var(--oc-border, rgba(128, 128, 128, 0.2));
+        border-radius: var(--oc-radius, 8px);
+        padding: 0.625rem 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.125rem;
+      }
+      .sh-kpi-btn {
+        cursor: pointer;
+        transition: border-color 120ms ease, background-color 120ms ease;
+      }
+      .sh-kpi-btn:hover {
+        background: var(--oc-hover, rgba(128, 128, 128, 0.1));
+      }
+      .sh-kpi-btn[aria-pressed="true"] {
+        border-color: var(--oc-primary, #4f86f7);
+        background: color-mix(in srgb, var(--oc-primary, #4f86f7) 10%, var(--oc-elevated, transparent));
+      }
+      .sh-kpi-val {
+        font-size: 1.25rem;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.2;
+      }
+      .sh-kpi-lbl {
+        font-size: 0.71875rem;
+        color: var(--oc-muted, rgba(128, 128, 128, 0.88));
+      }
+
+      /* Filters toolbar */
+      .sh-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .sh-search {
+        flex: 1 1 13rem;
+        min-width: 0;
+      }
+      .sh-filter-group {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.375rem;
+      }
+
+      /* Panel cards */
+      .sh-card {
+        background: var(--oc-elevated, rgba(128, 128, 128, 0.05));
+        border: 1px solid var(--oc-border, rgba(128, 128, 128, 0.2));
+        border-radius: var(--oc-radius, 8px);
+        padding: 0.75rem 0.875rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.625rem;
+      }
+      .sh-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .sh-card-title {
+        margin: 0;
+        font-size: 0.84375rem;
+        font-weight: 600;
+      }
+      .sh-legend {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 0.6875rem;
+        color: var(--oc-muted, rgba(128, 128, 128, 0.85));
+      }
+      .sh-sw {
+        width: 0.6875rem;
+        height: 0.6875rem;
+        border-radius: 2px;
+        display: inline-block;
+        border: 1px solid color-mix(in srgb, var(--oc-border, rgba(128, 128, 128, 0.25)) 70%, transparent);
+      }
+
+      /* Intensity levels using OpenChamber --oc-success */
+      .l0 {
+        background: var(--oc-muted-surface, rgba(128, 128, 128, 0.1));
+      }
+      .l1 {
+        background: color-mix(in srgb, var(--oc-success, #2fb375) 26%, var(--oc-muted-surface, transparent));
+      }
+      .l2 {
+        background: color-mix(in srgb, var(--oc-success, #2fb375) 50%, var(--oc-muted-surface, transparent));
+      }
+      .l3 {
+        background: color-mix(in srgb, var(--oc-success, #2fb375) 75%, var(--oc-muted-surface, transparent));
+      }
+      .l4 {
+        background: var(--oc-success, #2fb375);
+      }
+
+      /* Daily calendar */
+      .sh-cal-wrap {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.35rem;
+        overflow-x: auto;
+        padding-bottom: 0.25rem;
+      }
+      .sh-cal-days {
+        display: grid;
+        grid-template-rows: repeat(7, 0.78rem);
+        gap: 0.18rem;
+        font-size: 0.625rem;
+        color: var(--oc-muted, rgba(128, 128, 128, 0.85));
+        align-items: center;
+        padding-right: 0.2rem;
+        flex-shrink: 0;
+      }
+      .sh-cal-cols {
+        display: flex;
+        gap: 0.18rem;
+      }
+      .sh-cal-col {
+        display: grid;
+        grid-template-rows: repeat(7, 0.78rem);
+        gap: 0.18rem;
+      }
+      .sh-cal-cell {
+        appearance: none;
+        padding: 0;
+        width: 0.78rem;
+        height: 0.78rem;
+        border-radius: 2px;
+        border: 1px solid color-mix(in srgb, var(--oc-border, rgba(128, 128, 128, 0.22)) 60%, transparent);
+        cursor: pointer;
+      }
+      .sh-cal-cell:hover,
+      .sh-cal-cell:focus-visible {
+        outline: 1.5px solid var(--oc-focus, var(--oc-primary, #4f86f7));
+        outline-offset: -1px;
+      }
+
+      .sh-readout {
+        padding: 0.4375rem 0.625rem;
+        border-radius: calc(var(--oc-radius, 8px) - 2px);
+        background: var(--oc-muted-surface, rgba(128, 128, 128, 0.08));
+        border: 1px solid color-mix(in srgb, var(--oc-border, rgba(128, 128, 128, 0.18)) 70%, transparent);
+        font-size: 0.75rem;
+        min-height: 1.875rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
+      /* Matrix table */
+      .sh-matrix-card {
+        flex: 1 0 20rem;
+        min-block-size: 0;
+      }
+      .sh-scroll {
+        container-type: inline-size;
+        overflow: auto;
+        max-width: 100%;
+        flex: 1 1 0;
+        min-block-size: 16rem;
+        overscroll-behavior: contain;
+      }
+      .sh-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-variant-numeric: tabular-nums;
+      }
+      .sh-table th,
+      .sh-table td {
+        padding: 0.28rem 0.25rem;
+        font-size: 0.71875rem;
+        text-align: center;
+        border-bottom: 1px solid color-mix(in srgb, var(--oc-border, rgba(128, 128, 128, 0.15)) 60%, transparent);
+      }
+      .sh-table th {
+        color: var(--oc-muted, rgba(128, 128, 128, 0.85));
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .sh-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: var(--oc-elevated, var(--oc-bg, Canvas));
+      }
+      .sh-table th.left,
+      .sh-table td.left {
+        text-align: left;
+      }
+      .sh-skill-row {
+        cursor: pointer;
+        transition: background-color 110ms ease;
+      }
+      .sh-skill-row:hover {
+        background: var(--oc-hover, rgba(128, 128, 128, 0.08));
+      }
+      .sh-skill-row[data-selected="true"] {
+        background: var(--oc-selection, rgba(79, 134, 247, 0.14));
+      }
+      .sh-skill-row[data-dormant="true"] .sh-skill-btn {
+        color: var(--oc-muted, rgba(128, 128, 128, 0.88));
+      }
+      .sh-skill-btn {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: var(--oc-fg, inherit);
+        font-family: var(--oc-mono, ui-monospace, monospace);
+        font-size: 0.75rem;
+        padding: 0.125rem 0;
+        text-align: left;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        max-width: 15.5rem;
+      }
+      .sh-skill-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sh-dormant-pill {
+        font-family: var(--oc-font, system-ui, sans-serif);
+        font-size: 0.625rem;
+        padding: 0.05rem 0.35rem;
+        border-radius: 9999px;
+        border: 1px solid var(--oc-border, rgba(128, 128, 128, 0.25));
+        color: var(--oc-muted, rgba(128, 128, 128, 0.9));
+        flex-shrink: 0;
+      }
+      .sh-box {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.45rem;
+        height: 1.15rem;
+        padding: 0 0.2rem;
+        border-radius: 3px;
+        font-size: 0.65625rem;
+        border: 1px solid color-mix(in srgb, var(--oc-border, rgba(128, 128, 128, 0.18)) 50%, transparent);
+      }
+      .sh-box.l0 {
+        color: transparent;
+      }
+      .sh-box.l3,
+      .sh-box.l4 {
+        color: var(--oc-primary-foreground, #ffffff);
+        font-weight: 600;
+      }
+      .sh-mix {
+        display: inline-flex;
+        width: 3.75rem;
+        height: 0.375rem;
+        border-radius: 9999px;
+        overflow: hidden;
+        background: var(--oc-muted-surface, rgba(128, 128, 128, 0.14));
+        vertical-align: middle;
+      }
+      .sh-mix-u { background: var(--oc-info, #3b82f6); }
+      .sh-mix-a { background: var(--oc-success, #2fb375); }
+      .sh-mix-s { background: var(--oc-warning, #e59934); }
+      .sh-upstream {
+        display: inline-block;
+        max-width: 11.5rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-family: var(--oc-mono, ui-monospace, monospace);
+        font-size: 0.6875rem;
+        color: var(--oc-muted, rgba(128, 128, 128, 0.88));
+        vertical-align: middle;
+      }
+      .sh-upstream-empty {
+        color: var(--oc-subtle, rgba(128, 128, 128, 0.55));
+      }
+      .sh-policy-pill {
+        font-family: var(--oc-font, system-ui, sans-serif);
+        font-size: 0.625rem;
+        padding: 0.05rem 0.35rem;
+        border-radius: 9999px;
+        border: 1px solid var(--oc-border, rgba(128, 128, 128, 0.25));
+        color: var(--oc-muted, rgba(128, 128, 128, 0.88));
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .sh-policy-pill[data-effect="deny"] {
+        color: var(--oc-error-text, var(--oc-error, #ef4444));
+        border-color: color-mix(in srgb, var(--oc-error, #ef4444) 45%, transparent);
+        background: color-mix(in srgb, var(--oc-error, #ef4444) 12%, transparent);
+        font-weight: 500;
+      }
+      .sh-policy-pill[data-effect="allow"][data-explicit="true"] {
+        color: var(--oc-success-text, var(--oc-success, #2fb375));
+        border-color: color-mix(in srgb, var(--oc-success, #2fb375) 40%, transparent);
+        background: color-mix(in srgb, var(--oc-success, #2fb375) 10%, transparent);
+      }
+
+      /* Inline expanded skill inspector row */
+      .sh-detail-row td {
+        padding: 0;
+        text-align: left;
+        background: color-mix(in srgb, var(--oc-selection, rgba(79, 134, 247, 0.14)) 38%, var(--oc-elevated, transparent));
+      }
+      .sh-inspector {
+        position: sticky;
+        left: 0;
+        inline-size: 100cqw;
+        max-inline-size: 100cqw;
+        border-inline-start: 2px solid var(--oc-primary, #4f86f7);
+        padding: 0.75rem 0.875rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        white-space: normal;
+      }
+      .sh-insp-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.5rem;
+      }
+      .sh-insp-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-family: var(--oc-mono, ui-monospace, monospace);
+        font-size: 0.9rem;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+      }
+      .sh-insp-meta {
+        font-size: 0.75rem;
+        color: var(--oc-muted, rgba(128, 128, 128, 0.9));
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+      }
+      .sh-insp-desc {
+        margin: 0;
+        font-size: 0.8125rem;
+      }
+      .sh-insp-path {
+        font-family: var(--oc-mono, ui-monospace, monospace);
+        font-size: 0.71875rem;
+        color: var(--oc-muted, rgba(128, 128, 128, 0.85));
+        overflow-wrap: anywhere;
+      }
+      .sh-insp-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4375rem;
+      }
+
+      @container heatmap (max-width: 540px) {
+        .sh-scroll {
+          min-block-size: 12rem;
+        }
+        .sh-skill-btn {
+          max-width: 9.5rem;
+        }
+        .sh-mix-col,
+        .sh-upstream-col,
+        .sh-policy-col {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="./main.js"></script>
+  </body>
+</html>

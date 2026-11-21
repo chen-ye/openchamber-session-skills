@@ -16,5 +16,5 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true
   },
-  "include": ["shared/**/*.ts", "service/**/*.ts", "status/**/*.ts", "tests/**/*.ts"]
+  "include": ["shared/**/*.ts", "service/**/*.ts", "status/**/*.ts", "page/**/*.ts", "tests/**/*.ts"]
 }

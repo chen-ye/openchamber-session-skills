@@ -2,7 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { chromium } from 'playwright';
 import {
   OPENCHAMBER_SDK_API_VERSION,
@@ -354,6 +356,11 @@ const buildHostHtml = (): string => `<!doctype html>
       }
 
       if (data.type === 'popover-anchor') {
+        postToWindow(event.source, { type: 'result', id: data.id, ok: true });
+        return;
+      }
+
+      if (data.type === 'status-controls' || data.type === 'open-surface') {
         postToWindow(event.source, { type: 'result', id: data.id, ok: true });
         return;
       }
@@ -892,6 +899,580 @@ Check message schemas.`,
       await new Promise<void>((r) => harnessServer.close(() => r()));
       await new Promise<void>((r) => mockOpenCode.close(() => r()));
       await new Promise<void>((r) => mockCallback.close(() => r()));
+    }
+  }, 25_000);
+});
+
+describe('Skill Usage Heatmap Page Browser Verification (Playwright)', () => {
+  test('renders active and zero-activation skills across desktop dark and mobile light viewports', async () => {
+    await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'session-skills-page-ui-'));
+    const homeDir = path.join(tmpDir, 'home');
+    const skillsRoot = path.join(homeDir, '.config', 'opencode', 'skills');
+    const dbPath = path.join(tmpDir, 'opencode.db');
+    const dataDir = path.join(tmpDir, 'service-data');
+
+    const writeSkill = async (id: string, desc: string) => {
+      const dir = path.join(skillsRoot, id);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, 'SKILL.md'),
+        `---\nname: ${id}\ndescription: ${desc}\n---\n# ${id}\n`,
+        'utf8',
+      );
+    };
+    await writeSkill('jira-cli', 'Query and triage Jira tickets.');
+    await writeSkill('impeccable', 'Refine typography and visual hierarchy.');
+    await writeSkill('dormant-check', 'Zero-activation verification skill.');
+    await writeSkill('dormant-unused', 'Another dormant skill with 0 uses.');
+
+    const lockDir = path.join(homeDir, '.agents');
+    await fs.mkdir(lockDir, { recursive: true });
+    await fs.writeFile(
+      path.join(lockDir, '.skill-lock.json'),
+      JSON.stringify({
+        version: 3,
+        skills: {
+          'jira-cli': {
+            source: path.join(homeDir, 'Projects', 'reliaskills'),
+            sourceType: 'local',
+            sourceUrl: path.join(homeDir, 'Projects', 'reliaskills'),
+          },
+          impeccable: {
+            source: 'pbakaus/impeccable',
+            sourceType: 'github',
+            sourceUrl: 'https://github.com/pbakaus/impeccable.git',
+          },
+          'dormant-check': {
+            source: 'vercel-labs/skills',
+            sourceType: 'github',
+            sourceUrl: 'https://github.com/vercel-labs/skills.git',
+            ref: 'main',
+            skillPath: 'skills/dormant-check/SKILL.md',
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const opencodeCfgDir = path.join(homeDir, '.config', 'opencode');
+    await fs.mkdir(opencodeCfgDir, { recursive: true });
+    await fs.writeFile(
+      path.join(opencodeCfgDir, 'opencode.jsonc'),
+      JSON.stringify({
+        policies: [
+          { action: 'skill.use', resource: 'impeccable', effect: 'allow' },
+          { action: 'skill.use', resource: 'dormant-unused', effect: 'deny' },
+          { action: 'skill.use', resource: 'wrangler', effect: 'deny' },
+        ],
+      }),
+      'utf8',
+    );
+
+    const now = Date.now();
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE session_v2 (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT,
+        directory TEXT NOT NULL,
+        agent TEXT,
+        title TEXT,
+        time_created INTEGER NOT NULL
+      );
+      CREATE TABLE session_message (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        time_created INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE INDEX session_message_time_created_idx ON session_message(time_created);
+    `);
+    const insSess = db.prepare(
+      'INSERT INTO session_v2 (id, parent_id, directory, agent, title, time_created) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    const insMsg = db.prepare(
+      'INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    insSess.run('ses_page_1', null, '/home/alice/Projects/app', 'orchestrator', 'Main', now - 86_400_000 * 14);
+    insSess.run('ses_page_2', null, '/home/alice/Projects/other', 'orchestrator', 'Other', now - 86_400_000 * 2);
+
+    insMsg.run('m1', 'ses_page_1', 'user', 1, now - 86_400_000 * 14 + 100, JSON.stringify({
+      time: { created: now - 86_400_000 * 14 + 100 },
+      text: '$impeccable audit UI',
+      skills: [{ id: 'impeccable', name: 'impeccable', text: '<skill_content name="impeccable">hi</skill_content>' }],
+    }));
+    insMsg.run('m2', 'ses_page_2', 'assistant', 1, now - 86_400_000 * 2 + 100, JSON.stringify({
+      agent: 'orchestrator',
+      content: [{
+        type: 'tool',
+        id: 'c1',
+        name: 'skill',
+        state: { status: 'completed', input: { id: 'jira-cli' } },
+        time: { created: now - 86_400_000 * 2 + 100, completed: now - 86_400_000 * 2 + 120 },
+      }],
+    }));
+    insMsg.run('m3', 'ses_page_2', 'assistant', 2, now - 86_400_000 * 2 + 200, JSON.stringify({
+      agent: 'orchestrator',
+      content: [{
+        type: 'tool',
+        id: 'c2',
+        name: 'skill',
+        state: { status: 'completed', input: { id: 'jira-cli' } },
+        time: { created: now - 86_400_000 * 2 + 200, completed: now - 86_400_000 * 2 + 220 },
+      }],
+    }));
+
+    const pageHtmlRaw = await fs.readFile(path.join(EXTENSION_ROOT, 'page/index.html'), 'utf8');
+    const pageHtmlWithLook = pageHtmlRaw.replace(
+      '</head>',
+      `<style data-openchamber-guest-styles>${GUEST_UI_LOOK_CSS}</style></head>`,
+    );
+    const pageJsRaw = await fs.readFile(path.join(EXTENSION_ROOT, 'page/main.js'), 'utf8');
+
+    const probe = http.createServer();
+    const servicePort = await listenEphemeral(probe);
+    await new Promise<void>((r) => probe.close(() => r()));
+
+    const token = 'pw-page-token';
+    const service = startServer({
+      port: servicePort,
+      token,
+      homeDir,
+      dbPath,
+      dataDir,
+      env: { OPENCHAMBER_SERVICE_PORT: String(servicePort), OPENCHAMBER_SERVICE_TOKEN: token },
+    })!;
+
+    const hostHtml = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>Page Host</title>
+<style>html, body { margin:0; padding:0; width:100%; height:100%; background:#0f1115; } iframe { width:100%; height:100%; border:0; display:block; }</style>
+</head>
+<body>
+<iframe id="page-frame" sandbox="allow-scripts" src="/guest/page/index.html"></iframe>
+<script>
+const CHANNEL = ${JSON.stringify(OPENCHAMBER_SDK_CHANNEL)};
+const VERSION = ${JSON.stringify(OPENCHAMBER_SDK_API_VERSION)};
+const frame = document.getElementById('page-frame');
+let currentTheme = ${JSON.stringify(DARK_THEME)};
+window.__hostRecorded = { composed: [], toasts: [], openedUrls: [] };
+const post = (msg) => frame.contentWindow.postMessage({ channel: CHANNEL, v: VERSION, ...msg }, '*');
+window.addEventListener('message', async (ev) => {
+  const d = ev.data;
+  if (!d || d.channel !== CHANNEL || d.v !== VERSION || ev.source !== frame.contentWindow) return;
+  if (d.type === 'hello') {
+    post({
+      type: 'ready',
+      payload: {
+        theme: currentTheme,
+        locale: 'en',
+        directory: '/home/alice/Projects/app',
+        session: { id: 'ses_page_1', title: 'Main', busy: false },
+        surface: 'page',
+        connection: { connected: false, account: '' },
+        settings: {},
+        item: null,
+        features: { popovers: true, statusControls: true },
+      },
+    });
+    return;
+  }
+  if (d.type === 'service-request') {
+    const qs = d.payload.query ? '?' + new URLSearchParams(d.payload.query).toString() : '';
+    const r = await fetch('/proxy' + d.payload.path + qs, { method: d.payload.method });
+    post({ type: 'result', id: d.id, ok: true, payload: { status: r.status, body: await r.text() } });
+    return;
+  }
+  if (d.type === 'compose') {
+    window.__hostRecorded.composed.push(d.payload);
+    post({ type: 'result', id: d.id, ok: true });
+    return;
+  }
+  if (d.type === 'open-url') {
+    window.__hostRecorded.openedUrls.push(d.payload.url);
+    post({ type: 'result', id: d.id, ok: true });
+    return;
+  }
+  if (d.type === 'toast') {
+    window.__hostRecorded.toasts.push(d.payload);
+    post({ type: 'result', id: d.id, ok: true });
+    return;
+  }
+  post({ type: 'result', id: d.id, ok: true });
+});
+window.__pushTheme = (t) => {
+  currentTheme = t;
+  document.body.style.background = t.mode === 'dark' ? '#0f1115' : '#f5f6f8';
+  post({
+    type: 'ready',
+    payload: {
+      theme: t, locale: 'en', directory: '/home/alice/Projects/app',
+      session: { id: 'ses_page_1', title: 'Main', busy: false },
+      surface: 'page', connection: { connected: false, account: '' }, settings: {}, item: null,
+    },
+  });
+};
+</script>
+</body>
+</html>`;
+
+    const harness = http.createServer(async (req, res) => {
+      const u = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (u.pathname === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(hostHtml);
+        return;
+      }
+      if (u.pathname === '/guest/page/index.html') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(pageHtmlWithLook);
+        return;
+      }
+      if (u.pathname === '/guest/page/main.js') {
+        res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' }).end(pageJsRaw);
+        return;
+      }
+      if (u.pathname.startsWith('/proxy/')) {
+        const upstream = await fetch(`http://127.0.0.1:${servicePort}${u.pathname.slice('/proxy'.length)}${u.search}`, {
+          method: req.method,
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        res.writeHead(upstream.status, { 'Content-Type': 'application/json' }).end(await upstream.text());
+        return;
+      }
+      res.writeHead(404).end('Not found');
+    });
+
+    const harnessPort = await listenEphemeral(harness);
+    const browser = await chromium.launch({ headless: true });
+
+    try {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+      const errors: string[] = [];
+      page.on('console', (msg) => {
+        if (msg.type() === 'error') errors.push(msg.text());
+      });
+      page.on('pageerror', (err) => {
+        errors.push(err.message);
+      });
+
+      await page.goto(`http://127.0.0.1:${harnessPort}/`, { waitUntil: 'networkidle' });
+      const frame = page.frameLocator('#page-frame');
+      await frame.locator('.sh-skill-row').first().waitFor({ state: 'visible', timeout: 5_000 });
+
+      // Both active, dormant, and policy-denied skills appear, with upstreams & skill.use policy state
+      const allIds = await frame.locator('.sh-skill-row').evaluateAll((els) =>
+        els.map((el) => el.getAttribute('data-skill-id')),
+      );
+      expect(allIds).toEqual(['jira-cli', 'impeccable', 'dormant-check', 'dormant-unused', 'wrangler']);
+      expect(await frame.locator('.sh-skill-row[data-dormant="true"]').count()).toBe(3);
+      expect(await frame.locator('.sh-skill-row[data-skill-id="jira-cli"] .sh-upstream').textContent()).toBe('~/Projects/reliaskills');
+      expect(await frame.locator('.sh-skill-row[data-skill-id="dormant-check"] .sh-upstream').textContent()).toBe('vercel-labs/skills');
+      expect(await frame.locator('.sh-skill-row[data-skill-id="dormant-unused"] .sh-upstream').textContent()).toBe('—');
+      expect(await frame.locator('.sh-skill-row[data-skill-id="impeccable"] .sh-policy-col .sh-policy-pill').textContent()).toBe('allow*');
+      expect(await frame.locator('.sh-skill-row[data-skill-id="dormant-unused"] .sh-policy-col .sh-policy-pill').textContent()).toBe('deny');
+      expect(await frame.locator('.sh-skill-row[data-skill-id="wrangler"] .sh-policy-col .sh-policy-pill').textContent()).toBe('deny');
+
+      // Desktop dark screenshot & no page-level overflow
+      const desktopOverflow = await frame.locator('#root').evaluate((el) => el.scrollWidth > el.clientWidth);
+      expect(desktopOverflow).toBe(false);
+      await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'session-skills-heatmap-desktop-dark.png') });
+
+      // Click Denied by skill.use policy KPI -> filters to denied rows only and toggles back off
+      await frame.locator('.sh-kpi-btn', { hasText: 'Denied by skill.use policy' }).click();
+      const deniedIds = await frame.locator('.sh-skill-row').evaluateAll((els) =>
+        els.map((el) => el.getAttribute('data-skill-id')),
+      );
+      expect(deniedIds).toEqual(['dormant-unused', 'wrangler']);
+      await frame.locator('.sh-skill-row[data-skill-id="wrangler"]').click();
+      await frame.locator('.sh-inspector').waitFor({ state: 'visible', timeout: 3_000 });
+      expect(await frame.locator('.sh-inspector').textContent()).toContain('OpenCode policy: skill.use "wrangler" → deny (~/.config/opencode/opencode.jsonc)');
+      await frame.locator('.sh-inspector').getByRole('button', { name: 'Close' }).click();
+      await frame.locator('.sh-kpi-btn', { hasText: 'Denied by skill.use policy' }).click();
+
+      // Click Zero activations KPI -> filters down to dormant rows only
+      await frame.locator('.sh-kpi-btn', { hasText: 'Zero activations' }).click();
+      const dormantIds = await frame.locator('.sh-skill-row').evaluateAll((els) =>
+        els.map((el) => el.getAttribute('data-skill-id')),
+      );
+      expect(dormantIds).toEqual(['dormant-check', 'dormant-unused', 'wrangler']);
+
+      // Search box retains focus across input updates and matches upstream source
+      const searchInput = frame.getByPlaceholder('Filter skills by id, description, or upstream…');
+      await searchInput.click();
+      await searchInput.fill('vercel-labs');
+      const isFocused = await searchInput.evaluate((el) => document.activeElement === el);
+      expect(isFocused).toBe(true);
+      expect(await frame.locator('.sh-skill-row').count()).toBe(1);
+
+      // Click dormant-check -> inspector shows 0 activations, upstream, Insert in chat & Open upstream
+      await frame.locator('.sh-skill-row[data-skill-id="dormant-check"]').click();
+      await frame.locator('.sh-inspector').waitFor({ state: 'visible', timeout: 3_000 });
+      expect(await frame.locator('.sh-inspector').textContent()).toContain('Upstream (github): vercel-labs/skills');
+      await frame.getByRole('button', { name: 'Insert in chat' }).click();
+      await frame.getByRole('button', { name: 'Open upstream' }).click();
+      await page.waitForFunction(() => {
+        const rec = (window as unknown as { __hostRecorded: { composed: unknown[]; openedUrls: unknown[] } }).__hostRecorded;
+        return rec.composed.length > 0 && rec.openedUrls.length > 0;
+      });
+      const recorded = await page.evaluate(() => (
+        (window as unknown as { __hostRecorded: { composed: Array<{ text: string; mode?: string }>; openedUrls: string[] } }).__hostRecorded
+      ));
+      expect(recorded.composed).toEqual([{ text: '$dormant-check ', mode: 'append' }]);
+      expect(recorded.openedUrls).toEqual(['https://github.com/vercel-labs/skills']);
+
+      // Clear search, switch back to All skills, switch tabs, test Mobile Light viewport
+      await searchInput.fill('');
+      await frame.locator('.sh-kpi-btn', { hasText: 'Zero activations' }).click();
+      await frame.getByRole('tab', { name: 'Projects' }).click();
+      await frame.locator('.sh-table').waitFor({ state: 'visible', timeout: 3_000 });
+      await frame.getByRole('tab', { name: 'Cadence' }).click();
+      await frame.locator('.sh-table').waitFor({ state: 'visible', timeout: 3_000 });
+      await frame.getByRole('tab', { name: 'Timeline' }).click();
+
+      await page.setViewportSize({ width: 360, height: 780 });
+      await page.evaluate((light) => {
+        (window as unknown as { __pushTheme: (t: unknown) => void }).__pushTheme(light);
+      }, LIGHT_THEME);
+      await page.waitForTimeout(120);
+      const mobileOverflow = await frame.locator('#root').evaluate((el) => el.scrollWidth > el.clientWidth);
+      expect(mobileOverflow).toBe(false);
+      await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'session-skills-heatmap-mobile-light.png') });
+
+      expect(errors).toEqual([]);
+    } finally {
+      db.close();
+      await browser.close();
+      await service.close();
+      await new Promise<void>((r) => harness.close(() => r()));
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 25_000);
+
+  test('scrolls within matrix while keeping selected skill details in view', async () => {
+    await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'session-skills-page-scroll-'));
+    const homeDir = path.join(tmpDir, 'home');
+    const skillsRoot = path.join(homeDir, '.config', 'opencode', 'skills');
+    const dbPath = path.join(tmpDir, 'opencode.db');
+    const dataDir = path.join(tmpDir, 'service-data');
+
+    for (let i = 1; i <= 32; i += 1) {
+      const id = `skill-${String(i).padStart(2, '0')}`;
+      const dir = path.join(skillsRoot, id);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, 'SKILL.md'),
+        `---\nname: ${id}\ndescription: Description for ${id}.\n---\n# ${id}\n`,
+        'utf8',
+      );
+    }
+
+    const now = Date.now();
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE session_v2 (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT,
+        directory TEXT NOT NULL,
+        agent TEXT,
+        title TEXT,
+        time_created INTEGER NOT NULL
+      );
+      CREATE TABLE session_message (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        time_created INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE INDEX session_message_time_created_idx ON session_message(time_created);
+    `);
+    db.prepare(
+      'INSERT INTO session_v2 (id, parent_id, directory, agent, title, time_created) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run('ses_scroll_1', null, '/home/alice/Projects/app', 'orchestrator', 'Main', now - 86_400_000 * 3);
+    db.prepare(
+      'INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run('m_scroll_1', 'ses_scroll_1', 'assistant', 1, now - 86_400_000 * 2, JSON.stringify({
+      agent: 'orchestrator',
+      content: [{
+        type: 'tool',
+        id: 'c_scroll_1',
+        name: 'skill',
+        state: { status: 'completed', input: { id: 'skill-01' } },
+        time: { created: now - 86_400_000 * 2, completed: now - 86_400_000 * 2 + 10 },
+      }],
+    }));
+
+    const pageHtmlRaw = await fs.readFile(path.join(EXTENSION_ROOT, 'page/index.html'), 'utf8');
+    const pageHtmlWithLook = pageHtmlRaw.replace(
+      '</head>',
+      `<style data-openchamber-guest-styles>${GUEST_UI_LOOK_CSS}</style></head>`,
+    );
+    const pageJsRaw = await fs.readFile(path.join(EXTENSION_ROOT, 'page/main.js'), 'utf8');
+
+    const probe = http.createServer();
+    const servicePort = await listenEphemeral(probe);
+    await new Promise<void>((r) => probe.close(() => r()));
+
+    const token = 'pw-scroll-token';
+    const service = startServer({
+      port: servicePort,
+      token,
+      homeDir,
+      dbPath,
+      dataDir,
+      env: { OPENCHAMBER_SERVICE_PORT: String(servicePort), OPENCHAMBER_SERVICE_TOKEN: token },
+    })!;
+
+    const hostHtml = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>Scroll Host</title>
+<style>html, body { margin:0; padding:0; width:100%; height:100%; background:#0f1115; } iframe { width:100%; height:100%; border:0; display:block; }</style>
+</head>
+<body>
+<iframe id="page-frame" sandbox="allow-scripts" src="/guest/page/index.html"></iframe>
+<script>
+const CHANNEL = ${JSON.stringify(OPENCHAMBER_SDK_CHANNEL)};
+const VERSION = ${JSON.stringify(OPENCHAMBER_SDK_API_VERSION)};
+const frame = document.getElementById('page-frame');
+const post = (msg) => frame.contentWindow.postMessage({ channel: CHANNEL, v: VERSION, ...msg }, '*');
+window.addEventListener('message', async (ev) => {
+  const d = ev.data;
+  if (!d || d.channel !== CHANNEL || d.v !== VERSION || ev.source !== frame.contentWindow) return;
+  if (d.type === 'hello') {
+    post({
+      type: 'ready',
+      payload: {
+        theme: ${JSON.stringify(DARK_THEME)},
+        locale: 'en',
+        directory: '/home/alice/Projects/app',
+        session: { id: 'ses_scroll_1', title: 'Main', busy: false },
+        surface: 'page',
+        connection: { connected: false, account: '' },
+        settings: {},
+        item: null,
+      },
+    });
+    return;
+  }
+  if (d.type === 'service-request') {
+    const qs = d.payload.query ? '?' + new URLSearchParams(d.payload.query).toString() : '';
+    const r = await fetch('/proxy' + d.payload.path + qs, { method: d.payload.method });
+    post({ type: 'result', id: d.id, ok: true, payload: { status: r.status, body: await r.text() } });
+    return;
+  }
+  post({ type: 'result', id: d.id, ok: true });
+});
+</script>
+</body>
+</html>`;
+
+    const harness = http.createServer(async (req, res) => {
+      const u = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (u.pathname === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(hostHtml);
+        return;
+      }
+      if (u.pathname === '/guest/page/index.html') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(pageHtmlWithLook);
+        return;
+      }
+      if (u.pathname === '/guest/page/main.js') {
+        res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' }).end(pageJsRaw);
+        return;
+      }
+      if (u.pathname.startsWith('/proxy/')) {
+        const upstream = await fetch(`http://127.0.0.1:${servicePort}${u.pathname.slice('/proxy'.length)}${u.search}`, {
+          method: req.method,
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        res.writeHead(upstream.status, { 'Content-Type': 'application/json' }).end(await upstream.text());
+        return;
+      }
+      res.writeHead(404).end('Not found');
+    });
+
+    const harnessPort = await listenEphemeral(harness);
+    const browser = await chromium.launch({ headless: true });
+
+    try {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+      await page.goto(`http://127.0.0.1:${harnessPort}/`, { waitUntil: 'networkidle' });
+      const frame = page.frameLocator('#page-frame');
+      await frame.locator('.sh-skill-row').first().waitFor({ state: 'visible', timeout: 5_000 });
+
+      const scrollMetrics = await frame.locator('.sh-scroll').evaluate((el) => ({
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      }));
+      expect(scrollMetrics.scrollHeight).toBeGreaterThan(scrollMetrics.clientHeight);
+
+      // Scroll inside the matrix and select a skill near the bottom
+      const cardTopBefore = await frame.locator('.sh-matrix-card').evaluate((el) => el.getBoundingClientRect().top);
+      await frame.locator('.sh-scroll').evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await frame.locator('.sh-skill-row[data-skill-id="skill-30"]').click();
+      await frame.locator('.sh-detail-row[data-detail-for="skill-30"] .sh-inspector').waitFor({ state: 'visible', timeout: 3_000 });
+
+      // Matrix card position does not shift and scroll position is preserved
+      const cardTopAfter = await frame.locator('.sh-matrix-card').evaluate((el) => el.getBoundingClientRect().top);
+      expect(cardTopAfter).toBe(cardTopBefore);
+      const isDirectlyAfterRow = await frame.locator('.sh-skill-row[data-skill-id="skill-30"]').evaluate((el) => (
+        el.nextElementSibling?.getAttribute('data-detail-for') === 'skill-30'
+      ));
+      expect(isDirectlyAfterRow).toBe(true);
+      const scrollAfter = await frame.locator('.sh-scroll').evaluate((el) => el.scrollTop);
+      expect(scrollAfter).toBeGreaterThan(100);
+
+      // Inline inspector sits inside the visible .sh-scroll window
+      const inlineBounds = await frame.locator('.sh-scroll').evaluate((scrollEl) => {
+        const sr = scrollEl.getBoundingClientRect();
+        const ir = scrollEl.querySelector('.sh-inspector')!.getBoundingClientRect();
+        return { sTop: sr.top, sBot: sr.bottom, iTop: ir.top, iBot: ir.bottom };
+      });
+      expect(inlineBounds.iTop).toBeGreaterThanOrEqual(inlineBounds.sTop - 1);
+      expect(inlineBounds.iBot).toBeLessThanOrEqual(inlineBounds.sBot + 1);
+
+      // On tall viewports (1040px & 1200px), matrix expands to fill remaining available height
+      await page.setViewportSize({ width: 1280, height: 1040 });
+      await page.waitForTimeout(80);
+      const tallMetrics = await frame.locator('.sh-scroll').evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { clientHeight: el.clientHeight, bottom: r.bottom, vh: window.innerHeight };
+      });
+      expect(tallMetrics.clientHeight).toBeGreaterThan(340);
+      expect(tallMetrics.bottom).toBeGreaterThan(990);
+
+      await page.setViewportSize({ width: 1280, height: 1200 });
+      await page.waitForTimeout(80);
+      const extraTallHeight = await frame.locator('.sh-scroll').evaluate((el) => el.clientHeight);
+      expect(extraTallHeight).toBeGreaterThan(tallMetrics.clientHeight + 120);
+
+      // On small-height viewport (460px), matrix keeps min-height (>= 220px) and inline inspector stays inside matrix
+      await page.setViewportSize({ width: 1280, height: 460 });
+      await page.waitForTimeout(80);
+      const shortHeight = await frame.locator('.sh-scroll').evaluate((el) => el.clientHeight);
+      expect(shortHeight).toBeGreaterThanOrEqual(220);
+
+      await frame.locator('#root').evaluate((el) => {
+        el.scrollTop = 260;
+      });
+      await page.waitForTimeout(80);
+
+      await page.setViewportSize({ width: 1280, height: 760 });
+      await frame.locator('#root').evaluate((el) => { el.scrollTop = 0; });
+      await page.waitForTimeout(80);
+      await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'session-skills-heatmap-scroll.png') });
+    } finally {
+      db.close();
+      await browser.close();
+      await service.close();
+      await new Promise<void>((r) => harness.close(() => r()));
+      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   }, 25_000);
 });
