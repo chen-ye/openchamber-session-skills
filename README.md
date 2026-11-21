@@ -44,6 +44,8 @@ Hovering, focusing, or clicking a row opens a detail popover (or expands an inli
 
 ### Skill Usage Heatmap (`contributes.page` & `Map` control)
 
+![Skill Usage Heatmap](docs/session-skills-heatmap.png)
+
 Open **Extension pages → Skill Usage Heatmap** (or click **Map** in the Work Status header) to inspect historical and live skill usage mined read-only from `~/.local/share/opencode/opencode.db` (`node:sqlite`), backed by an incremental watermark cache in `OPENCHAMBER_SERVICE_DATA_DIR`:
 
 - Filters out `auto-gate-eval` / `/tmp/` sandboxes, cloned fork message history, and duplicate parent/child subagent handoffs.
